@@ -98,6 +98,9 @@ public class PatrolRoute : MonoBehaviour
     {
         if (points.Count == 0) return;
 
+        // Rota çizgisi ve işaretler çalışma anında NavMesh bake'ine dahil olmasın
+        NavMeshRebaker.ExcludeFromBake(gameObject);
+
         Material mat = new Material(Shader.Find("Sprites/Default"));
         mpb = new MaterialPropertyBlock();
 

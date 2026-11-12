@@ -83,6 +83,7 @@ public class EnemyAI : MonoBehaviour
     private float searchTimer;
     private float repathTimer;
     private bool caught;
+    private float baseSpeed;
 
     void Awake()
     {
@@ -121,7 +122,36 @@ public class EnemyAI : MonoBehaviour
             case State.Search: UpdateSearch(seesTarget); break;
         }
 
+        // Çamurdaysak yavaşla
+        agent.speed = baseSpeed * MudZone.SpeedMultiplierAt(transform.position);
+
         DrawPath();
+    }
+
+    void OnEnable() => NavMeshRebaker.Rebaked += OnNavMeshRebaked;
+    void OnDisable() => NavMeshRebaker.Rebaked -= OnNavMeshRebaked;
+
+    /// <summary>
+    /// NavMesh değişti (ör. kapı açıldı/kapandı): mevcut hedefe giden yolu yeniden hesapla.
+    /// Kapı kapandıysa düşman etrafından dolanır, açıldıysa kestirmeden gider.
+    /// </summary>
+    void OnNavMeshRebaked()
+    {
+        if (!agent.isOnNavMesh)
+        {
+            // Kapı tam üstümüzde kapandıysa en yakın geçerli noktaya kay
+            if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+                agent.Warp(hit.position);
+            else
+                return;
+        }
+
+        if (CurrentState == State.Patrol && patrolRoute != null && patrolRoute.Count > 0)
+            agent.SetDestination(patrolRoute.GetPoint(waypointIndex));
+        else if (CurrentState == State.Chase && target != null)
+            agent.SetDestination(target.position);
+        else if (CurrentState == State.Search)
+            agent.SetDestination(lastKnownPosition);
     }
 
     void LateUpdate()
@@ -143,7 +173,7 @@ public class EnemyAI : MonoBehaviour
         switch (newState)
         {
             case State.Patrol:
-                agent.speed = patrolSpeed;
+                baseSpeed = patrolSpeed;
                 agent.stoppingDistance = 0f;
                 agent.autoBraking = true;
                 agent.updateRotation = true;
@@ -152,7 +182,7 @@ public class EnemyAI : MonoBehaviour
                 break;
 
             case State.Chase:
-                agent.speed = chaseSpeed;
+                baseSpeed = chaseSpeed;
                 agent.stoppingDistance = catchDistance * 0.8f;
                 agent.autoBraking = false;
                 agent.updateRotation = true;
@@ -161,7 +191,7 @@ public class EnemyAI : MonoBehaviour
                 break;
 
             case State.Search:
-                agent.speed = searchSpeed;
+                baseSpeed = searchSpeed;
                 agent.stoppingDistance = 0f;
                 agent.autoBraking = true;
                 agent.updateRotation = true;

@@ -22,6 +22,9 @@ public class PlayerController : MonoBehaviour
     {
         controller = GetComponent<CharacterController>();
 
+        // Oyuncunun mesh'i NavMesh bake edilirken zeminde delik açmasın
+        NavMeshRebaker.ExcludeFromBake(gameObject);
+
         // Yeni Input Sistemi ile kod üzerinden WASD + ok tuşları ataması
         moveAction = new InputAction("Move", InputActionType.Value);
         moveAction.AddCompositeBinding("2DVector")
@@ -57,7 +60,8 @@ public class PlayerController : MonoBehaviour
         if (controller.isGrounded && verticalVelocity < 0f) verticalVelocity = -2f;
         verticalVelocity += gravity * Time.deltaTime;
 
-        Vector3 velocity = move * speed + Vector3.up * verticalVelocity;
+        float currentSpeed = speed * MudZone.SpeedMultiplierAt(transform.position); // çamurda yavaşla
+        Vector3 velocity = move * currentSpeed + Vector3.up * verticalVelocity;
         controller.Move(velocity * Time.deltaTime);
     }
 }

@@ -98,6 +98,7 @@ public class EnemyVision : MonoBehaviour
     {
         // Ayrı bir obje: düşmanın scale'inden etkilenmesin, vertex'ler dünya koordinatında
         GameObject go = new GameObject(name + "_GorusAlani");
+        NavMeshRebaker.ExcludeFromBake(go); // çalışma anında bake edilirken zemine "yama" olmasın
         coneTransform = go.transform;
 
         coneMesh = new Mesh { name = "VisionCone" };
