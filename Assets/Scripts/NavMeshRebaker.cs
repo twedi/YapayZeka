@@ -22,6 +22,9 @@ public class NavMeshRebaker : MonoBehaviour
 
     [Tooltip("Oyun başında bir kez bake et (çamur / kapı gibi sahne değişiklikleri editörde bake edilmemiş olsa bile uygulanır).")]
     public bool rebakeOnStart = true;
+    [Tooltip("Başlangıç bake'i sıfırdan (BuildNavMesh) yapılsın. NavMeshSurface ayarları (tile boyutu vb.) " +
+             "editörde bake edilen veriden farklı olsa bile doğru sonuç verir.")]
+    public bool fullRebuildOnStart = true;
     public bool logRebakes = true;
 
     private NavMeshSurface surface;
@@ -39,7 +42,18 @@ public class NavMeshRebaker : MonoBehaviour
 
     void Start()
     {
-        if (rebakeOnStart) RequestRebake();
+        if (!rebakeOnStart) return;
+
+        if (fullRebuildOnStart)
+        {
+            startTime = Time.realtimeSinceStartup;
+            surface.BuildNavMesh();
+            OnBakeFinished();
+        }
+        else
+        {
+            RequestRebake();
+        }
     }
 
     void OnDestroy()

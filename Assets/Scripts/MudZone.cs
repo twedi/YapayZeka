@@ -21,7 +21,7 @@ public class MudZone : MonoBehaviour
     [Tooltip("Project Settings > Navigation > Areas içindeki 'Mud' alanının adı.")]
     public string areaName = "Mud";
     [Tooltip("Çamurdan geçmenin maliyeti. Normal zemin = 1. Ne kadar yüksekse düşman o kadar uzaktan dolanır.")]
-    public float areaCost = 10f;
+    public float areaCost = 20f;
 
     [Header("Fiziksel Etki")]
     [Tooltip("Çamurun içindeyken hız çarpanı.")]
@@ -72,8 +72,30 @@ public class MudZone : MonoBehaviour
         if (showLabel) CreateLabel();
     }
 
-    void OnEnable() => zones.Add(this);
-    void OnDisable() => zones.Remove(this);
+    void OnEnable()
+    {
+        zones.Add(this);
+        NavMeshRebaker.Rebaked += CheckBaked;
+    }
+
+    void OnDisable()
+    {
+        zones.Remove(this);
+        NavMeshRebaker.Rebaked -= CheckBaked;
+    }
+
+    /// <summary>Bake'ten sonra çamurun NavMesh'e gerçekten işlenip işlenmediğini kontrol eder.</summary>
+    void CheckBaked()
+    {
+        int area = NavMesh.GetAreaFromName(areaName);
+        if (area < 0) return;
+
+        bool ok = NavMesh.SamplePosition(bounds.center, out NavMeshHit hit, 3f, 1 << area);
+        if (ok)
+            Debug.Log($"{name}: NavMesh'te '{areaName}' alanı aktif (maliyet x{NavMesh.GetAreaCost(area)}).");
+        else
+            Debug.LogWarning($"{name}: NavMesh'te '{areaName}' alanı bulunamadı! NavMeshSurface'i yeniden bake et.");
+    }
 
     bool Contains(Vector3 position)
     {

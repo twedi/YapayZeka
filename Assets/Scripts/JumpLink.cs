@@ -26,7 +26,7 @@ public class JumpLink : MonoBehaviour
     public Color arcColor = new Color(0.3f, 0.7f, 1f, 0.7f);
     [Tooltip("Link genişliği boyunca kaç tane yay çizilsin.")]
     [Range(1, 9)] public int arcCount = 5;
-    public float arcHeight = 3f;
+    public float arcHeight = 2f;
     public Color wallColor = new Color(0.45f, 0.55f, 0.7f);
     [Tooltip("Rengi değiştirilecek duvar (opsiyonel).")]
     public Renderer wallRenderer;

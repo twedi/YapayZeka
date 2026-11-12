@@ -57,7 +57,7 @@ public class EnemyAI : MonoBehaviour
     [Tooltip("Açıksa düşman sadece kovalarken / ararken zıplama linklerini kullanır; devriyede etrafından dolanır.")]
     public bool jumpOnlyWhenChasing = true;
     [Tooltip("Zıplama yayının tepe yüksekliği (dünya birimi).")]
-    public float jumpHeight = 3.5f;
+    public float jumpHeight = 3f;
     [Tooltip("Zıplamanın süresi (sn).")]
     public float jumpDuration = 0.6f;
     [Tooltip("Project Settings > Navigation > Areas içindeki zıplama alanının adı.")]
@@ -133,6 +133,14 @@ public class EnemyAI : MonoBehaviour
 
     void Update()
     {
+        // Görüş zıplarken de çalışsın; yoksa indiğinde oyuncuyu "unutmuş" olur
+        bool seesTarget = vision.CanSee(target);
+        if (seesTarget)
+        {
+            lastKnownPosition = target.position;
+            lastSeenTime = Time.time;
+        }
+
         // Link'in başına geldiysek zıpla; zıplarken başka karar verme
         if (jumping) return;
         if (agent.isOnOffMeshLink)
@@ -142,13 +150,6 @@ public class EnemyAI : MonoBehaviour
         }
 
         ApplyAreaMask();
-
-        bool seesTarget = vision.CanSee(target);
-        if (seesTarget)
-        {
-            lastKnownPosition = target.position;
-            lastSeenTime = Time.time;
-        }
 
         switch (CurrentState)
         {
@@ -182,6 +183,14 @@ public class EnemyAI : MonoBehaviour
             else
                 return;
         }
+
+        RefreshDestination();
+    }
+
+    /// <summary>Mevcut duruma göre hedefi yeniden ver (yol baştan hesaplanır).</summary>
+    void RefreshDestination()
+    {
+        if (!agent.isOnNavMesh) return;
 
         if (CurrentState == State.Patrol && patrolRoute != null && patrolRoute.Count > 0)
             agent.SetDestination(patrolRoute.GetPoint(waypointIndex));
@@ -383,10 +392,16 @@ public class EnemyAI : MonoBehaviour
             yield return null;
         }
 
-        // Ajanı link'in diğer ucuna bırak, sonra transform ile senkronu geri aç
+        // Ajanı link'in diğer ucuna bırak, sonra transform ile senkronu geri aç.
+        // NOT: agent.nextPosition kullanmıyoruz; o, ajanı NavMesh bağlantısı boyunca kaydırır
+        // ve duvarın içinden geçemediği için ajan başladığı tarafta kalır -> düşman geri ışınlanır.
+        // Warp ise ajanı doğrudan iniş noktasına koyar.
         agent.CompleteOffMeshLink();
-        agent.nextPosition = data.endPos;
-        transform.position = end;
+        Vector3 landing = data.endPos;
+        if (NavMesh.SamplePosition(data.endPos, out NavMeshHit landHit, 2f, NavMesh.AllAreas))
+            landing = landHit.position;
+        agent.Warp(landing);                       // Warp yolu sıfırlar, aşağıda yeniden veriyoruz
+        transform.position = landing + Vector3.up * yOffset;
         agent.updatePosition = true;
         agent.updateRotation = true;
 
@@ -395,7 +410,8 @@ public class EnemyAI : MonoBehaviour
         // Hemen geri zıplamasın; kovalıyorsak yeni konumdan yolu tazele
         jumpCooldownUntil = Time.time + jumpCooldown;
         ApplyAreaMask();
-        repathTimer = 0f;
+        RefreshDestination();
+        repathTimer = repathInterval;
         jumping = false;
     }
 

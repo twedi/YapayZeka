@@ -14,8 +14,8 @@ public class EnemyVision : MonoBehaviour
     [Range(1f, 360f)] public float viewAngle = 90f;
     [Tooltip("Bu mesafenin içindeyse açıdan bağımsız olarak fark edilir (ensesinde durmak gibi).")]
     public float proximityRadius = 3f;
-    [Tooltip("Gözün zeminden yüksekliği (dünya birimi).")]
-    public float eyeHeight = 1.5f;
+    [Tooltip("Gözün zeminden yüksekliği (dünya birimi). Düşman ~4.6 birim boyunda; alçak duvarların üstünden görebilsin.")]
+    public float eyeHeight = 3.5f;
     [Tooltip("Görüşü engelleyen katmanlar. Oyuncunun katmanı da dahil olmalı.")]
     public LayerMask obstacleMask = ~0;
 
