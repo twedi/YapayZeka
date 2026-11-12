@@ -62,6 +62,10 @@ public class EnemyAI : MonoBehaviour
     public float jumpDuration = 0.6f;
     [Tooltip("Project Settings > Navigation > Areas içindeki zıplama alanının adı.")]
     public string jumpAreaName = "Jump";
+    [Tooltip("Link'in başlangıcına bu mesafeden yakınsa zıplama kararı kesinleşir; oyuncu sağa sola gitse de yol değiştirilmez.")]
+    public float jumpCommitDistance = 4f;
+    [Tooltip("İndikten sonra bu süre boyunca tekrar zıplamaz (duvarın üstünde ileri-geri sekmesin).")]
+    public float jumpCooldown = 1f;
 
     [Header("Görsel")]
     public Color patrolColor = new Color(0.2f, 1f, 0.3f);
@@ -97,6 +101,7 @@ public class EnemyAI : MonoBehaviour
     private float baseSpeed;
     private bool jumping;
     private int jumpAreaMask;
+    private float jumpCooldownUntil;
 
     public bool IsJumping => jumping;
 
@@ -135,6 +140,8 @@ public class EnemyAI : MonoBehaviour
             StartCoroutine(JumpAcrossLink());
             return;
         }
+
+        ApplyAreaMask();
 
         bool seesTarget = vision.CanSee(target);
         if (seesTarget)
@@ -200,11 +207,7 @@ public class EnemyAI : MonoBehaviour
         CurrentState = newState;
         repathTimer = 0f;
 
-        // Devriyede zıplama alanını yasakla, kovalarken / ararken serbest bırak.
-        // Yasak değilse A* zıplamanın maliyetini (link uzunluğu x Jump alan maliyeti)
-        // etrafından dolanmanın maliyetiyle karşılaştırır ve ucuz olanı seçer.
-        bool allowJump = !jumpOnlyWhenChasing || newState != State.Patrol;
-        agent.areaMask = allowJump ? NavMesh.AllAreas : NavMesh.AllAreas & ~jumpAreaMask;
+        ApplyAreaMask();
 
         switch (newState)
         {
@@ -283,7 +286,10 @@ public class EnemyAI : MonoBehaviour
         if (repathTimer <= 0f)
         {
             repathTimer = repathInterval;
-            agent.SetDestination(target.position);
+            // Zıplamak üzereysek yolu değiştirme; yoksa oyuncu sağa sola gittikçe
+            // karar "zıpla" <-> "dolan" arasında gidip gelir ve düşman titrer
+            if (!IsCommittedToJump())
+                agent.SetDestination(target.position);
         }
 
         // Yakaladı mı?
@@ -339,33 +345,81 @@ public class EnemyAI : MonoBehaviour
     {
         jumping = true;
         OffMeshLinkData data = agent.currentOffMeshLinkData;
+        if (!data.valid)
+        {
+            agent.CompleteOffMeshLink();
+            jumping = false;
+            yield break;
+        }
 
         // Transform ile NavMesh yüzeyi arasındaki dikey fark (baseOffset * scale)
         float yOffset = transform.position.y - agent.nextPosition.y;
+
+        // ÖNEMLİ: Zıplarken transform'u biz hareket ettiriyoruz. updatePosition açık kalırsa
+        // ajan, duvarın üstündeki transform'u NavMesh'e "yapıştırmaya" çalışır ve
+        // düşman bir anda başka bir yere ışınlanır. Bu yüzden zıplama boyunca senkronu kapatıyoruz.
+        agent.updatePosition = false;
+        agent.updateRotation = false;
+
         Vector3 start = transform.position;
         Vector3 end = data.endPos + Vector3.up * yOffset;
 
         Vector3 flatDir = end - start;
         flatDir.y = 0f;
-        if (flatDir.sqrMagnitude > 0.001f) transform.rotation = Quaternion.LookRotation(flatDir);
+        Quaternion startRot = transform.rotation;
+        Quaternion endRot = flatDir.sqrMagnitude > 0.001f ? Quaternion.LookRotation(flatDir) : startRot;
 
         string previousText = label != null ? label.text : null;
         if (label != null) label.text = "ZIPLIYOR!";
+        pathLine.positionCount = 0;
 
         float t = 0f;
         while (t < 1f)
         {
-            t += Time.deltaTime / Mathf.Max(0.05f, jumpDuration);
-            float k = Mathf.Clamp01(t);
-            float arc = jumpHeight * 4f * (k - k * k); // 0 -> tepe -> 0
-            transform.position = Vector3.Lerp(start, end, k) + Vector3.up * arc;
-            DrawPath();
+            t = Mathf.Min(1f, t + Time.deltaTime / Mathf.Max(0.05f, jumpDuration));
+            float arc = jumpHeight * 4f * (t - t * t); // 0 -> tepe -> 0
+            transform.position = Vector3.Lerp(start, end, t) + Vector3.up * arc;
+            transform.rotation = Quaternion.Slerp(startRot, endRot, t * 4f);
             yield return null;
         }
 
+        // Ajanı link'in diğer ucuna bırak, sonra transform ile senkronu geri aç
         agent.CompleteOffMeshLink();
+        agent.nextPosition = data.endPos;
+        transform.position = end;
+        agent.updatePosition = true;
+        agent.updateRotation = true;
+
         if (label != null && previousText != null) label.text = previousText;
+
+        // Hemen geri zıplamasın; kovalıyorsak yeni konumdan yolu tazele
+        jumpCooldownUntil = Time.time + jumpCooldown;
+        ApplyAreaMask();
+        repathTimer = 0f;
         jumping = false;
+    }
+
+    /// <summary>
+    /// Devriyede ve zıplama bekleme süresinde Jump alanını yasakla, diğer durumlarda serbest bırak.
+    /// Serbestken A* zıplamanın maliyetini (link uzunluğu x Jump alan maliyeti)
+    /// etrafından dolanmanın maliyetiyle karşılaştırır ve ucuz olanı seçer.
+    /// </summary>
+    void ApplyAreaMask()
+    {
+        bool allowJump = (!jumpOnlyWhenChasing || CurrentState != State.Patrol) && Time.time >= jumpCooldownUntil;
+        int mask = allowJump ? NavMesh.AllAreas : NavMesh.AllAreas & ~jumpAreaMask;
+        if (agent.areaMask != mask) agent.areaMask = mask;
+    }
+
+    /// <summary>Yol bir zıplama link'inden geçiyor ve link'in başına çok yakın mıyız?</summary>
+    bool IsCommittedToJump()
+    {
+        if (!agent.hasPath || agent.pathPending) return false;
+        OffMeshLinkData next = agent.nextOffMeshLinkData;
+        if (!next.valid) return false;
+        Vector3 d = next.startPos - agent.nextPosition;
+        d.y = 0f;
+        return d.magnitude <= jumpCommitDistance;
     }
 
     // ---------------------------------------------------------------- Yardımcılar
