@@ -4,12 +4,15 @@ using UnityEngine.AI;
 using UnityEngine.Events;
 
 /// <summary>
-/// Düşman yapay zekası (basit durum makinesi):
+/// Düşman yapay zekası – Hafta 7: State deseni ile sonlu durum makinesi (Buckland, Bölüm 2).
+/// Durum sınıfları EnemyStates.cs içinde; bu sınıf yalnızca veri ve yardımcı metotları tutar.
 ///
-///   DEVRİYE  --(oyuncuyu gördü)-->  KOVALAMA
-///   KOVALAMA --(gözden kaybetti, hafıza süresi doldu)--> ARAMA (son görülen yere gider, etrafa bakar)
-///   ARAMA    --(oyuncuyu tekrar gördü)--> KOVALAMA
-///   ARAMA    --(arama süresi doldu)--> DEVRİYE (en yakın waypoint'ten devam eder)
+///   GLOBAL   : oyuncu görüldü -> KOVALA (Kovala hariç her durumdan)
+///   DEVRİYE  : kapı az önce önünde kapandı -> KAPIDA BEKLE
+///   KOVALA   : oyuncu memoryDuration'dan uzun süredir görünmüyor -> ARA
+///   ARA      : kapı az önce önünde kapandı -> KAPIDA BEKLE ; vardı + bakındı -> DEVRİYE
+///   KAPIDA BEKLE : kapı açıldı (ya da bekleme süresi doldu) -> ÖNCEKİ DURUM
+///   ARAŞTIR (ödev): ses duyuldu (Devriye/Ara'dayken, 8 m) -> sese git, 3 sn bakın -> DEVRİYE
 ///
 /// Görsel geri bildirim:
 ///   - Gidilen yol (NavMesh path) LineRenderer ile çizilir, rengi duruma göre değişir.
@@ -22,8 +25,6 @@ using UnityEngine.Events;
 [RequireComponent(typeof(EnemyVision))]
 public class EnemyAI : MonoBehaviour
 {
-    public enum State { Patrol, Chase, Search }
-
     [Header("Referanslar")]
     [Tooltip("Kovalanacak hedef (oyuncu).")]
     public Transform target;
@@ -67,10 +68,28 @@ public class EnemyAI : MonoBehaviour
     [Tooltip("İndikten sonra bu süre boyunca tekrar zıplamaz (duvarın üstünde ileri-geri sekmesin).")]
     public float jumpCooldown = 1f;
 
+    [Header("Kapıda Bekle (Hafta 7)")]
+    [Tooltip("Kapı (boşsa bu durum hiç kullanılmaz).")]
+    public RisingDoor door;
+    [Tooltip("Kapı bu mesafedeyken kapanırsa düşman durup bekler.")]
+    public float doorStopDistance = 5f;
+    [Tooltip("Kapı kapandıktan sonra kaç saniye içinde yakındaysa 'önümde kapandı' sayılır.")]
+    public float doorReactTime = 1.5f;
+    [Tooltip("En fazla bu kadar bekler, sonra önceki işine döner (0 = kapı açılana kadar).")]
+    public float maxDoorWait = 8f;
+
+    [Header("Ses / Araştır (Hafta 7 ödevi)")]
+    [Tooltip("Bu mesafeden yakın sesleri duyar. Duvarlar sesi kesmez.")]
+    public float hearingRange = 8f;
+    [Tooltip("Sesin geldiği yerde bakınma süresi.")]
+    public float investigateLookTime = 3f;
+
     [Header("Görsel")]
     public Color patrolColor = new Color(0.2f, 1f, 0.3f);
     public Color chaseColor = new Color(1f, 0.15f, 0.1f);
     public Color searchColor = new Color(1f, 0.8f, 0.1f);
+    public Color waitColor = new Color(0.6f, 0.6f, 0.6f);
+    public Color investigateColor = new Color(0.7f, 0.3f, 1f);
     public float pathLineWidth = 0.2f;
     public bool showStateLabel = true;
     public float labelHeight = 4f;
@@ -79,7 +98,17 @@ public class EnemyAI : MonoBehaviour
     public UnityEvent onPlayerSpotted;
     public UnityEvent onPlayerCaught;
 
-    public State CurrentState { get; private set; } = State.Patrol;
+    // Durum nesneleri: her düşmanın kendi kopyası
+    public readonly EnemyPatrol Patrol = new EnemyPatrol();
+    public readonly EnemyChase Chase = new EnemyChase();
+    public readonly EnemySearch Search = new EnemySearch();
+    public readonly EnemyWaitAtDoor WaitAtDoor = new EnemyWaitAtDoor();
+    public readonly EnemyInvestigate Investigate = new EnemyInvestigate();
+
+    public StateMachine<EnemyAI> FSM { get; private set; }
+    public NavMeshAgent Agent => agent;
+    public bool SeesTarget { get; private set; }
+    public string StateName => FSM?.Current?.Name ?? "-";
 
     private NavMeshAgent agent;
     private LineRenderer pathLine;
@@ -91,14 +120,13 @@ public class EnemyAI : MonoBehaviour
 
     private int waypointIndex;
     private int patrolDirection = 1;
-    private float waitTimer;
 
-    private Vector3 lastKnownPosition;
-    private float lastSeenTime = -999f;
-    private float searchTimer;
+    [HideInInspector] public Vector3 lastKnownPosition;
+    [HideInInspector] public float lastSeenTime = -999f;
+    [HideInInspector] public Vector3 noisePosition;
     private float repathTimer;
     private bool caught;
-    private float baseSpeed;
+    [HideInInspector] public float baseSpeed;
     private bool jumping;
     private int jumpAreaMask;
     private float jumpCooldownUntil;
@@ -121,6 +149,9 @@ public class EnemyAI : MonoBehaviour
 
         SetupPathLine();
         if (showStateLabel) CreateLabel();
+
+        FSM = new StateMachine<EnemyAI>(this);
+        FSM.Global = new EnemyGlobal();
     }
 
     void Start()
@@ -128,14 +159,14 @@ public class EnemyAI : MonoBehaviour
         if (patrolRoute != null && patrolRoute.Count > 0)
             waypointIndex = patrolRoute.ClosestIndex(transform.position);
 
-        EnterState(State.Patrol);
+        FSM.ChangeState(Patrol);
     }
 
     void Update()
     {
         // Görüş zıplarken de çalışsın; yoksa indiğinde oyuncuyu "unutmuş" olur
-        bool seesTarget = vision.CanSee(target);
-        if (seesTarget)
+        SeesTarget = vision.CanSee(target);
+        if (SeesTarget)
         {
             lastKnownPosition = target.position;
             lastSeenTime = Time.time;
@@ -151,12 +182,8 @@ public class EnemyAI : MonoBehaviour
 
         ApplyAreaMask();
 
-        switch (CurrentState)
-        {
-            case State.Patrol: UpdatePatrol(seesTarget); break;
-            case State.Chase:  UpdateChase(seesTarget);  break;
-            case State.Search: UpdateSearch(seesTarget); break;
-        }
+        // Önce global durum, sonra mevcut durum (StateMachine.Update)
+        FSM.Update();
 
         // Çamurdaysak yavaşla
         agent.speed = baseSpeed * MudZone.SpeedMultiplierAt(transform.position);
@@ -190,14 +217,16 @@ public class EnemyAI : MonoBehaviour
     /// <summary>Mevcut duruma göre hedefi yeniden ver (yol baştan hesaplanır).</summary>
     void RefreshDestination()
     {
-        if (!agent.isOnNavMesh) return;
+        if (!agent.isOnNavMesh || FSM == null) return;
 
-        if (CurrentState == State.Patrol && patrolRoute != null && patrolRoute.Count > 0)
+        if (FSM.IsIn(Patrol) && patrolRoute != null && patrolRoute.Count > 0)
             agent.SetDestination(patrolRoute.GetPoint(waypointIndex));
-        else if (CurrentState == State.Chase && target != null)
+        else if (FSM.IsIn(Chase) && target != null)
             agent.SetDestination(target.position);
-        else if (CurrentState == State.Search)
+        else if (FSM.IsIn(Search))
             agent.SetDestination(lastKnownPosition);
+        else if (FSM.IsIn(Investigate))
+            agent.SetDestination(noisePosition);
     }
 
     void LateUpdate()
@@ -209,88 +238,11 @@ public class EnemyAI : MonoBehaviour
         }
     }
 
-    // ---------------------------------------------------------------- Durumlar
+    // ---------------------------------------------------------------- Durumların kullandığı yardımcılar
 
-    void EnterState(State newState)
+    /// <summary>Kovala durumu: hedefi takip et, yakalandıysa olayı tetikle.</summary>
+    public void ChaseTick()
     {
-        CurrentState = newState;
-        repathTimer = 0f;
-
-        ApplyAreaMask();
-
-        switch (newState)
-        {
-            case State.Patrol:
-                baseSpeed = patrolSpeed;
-                agent.stoppingDistance = 0f;
-                agent.autoBraking = true;
-                agent.updateRotation = true;
-                waitTimer = 0f;
-                GoToCurrentWaypoint();
-                break;
-
-            case State.Chase:
-                baseSpeed = chaseSpeed;
-                agent.stoppingDistance = catchDistance * 0.8f;
-                agent.autoBraking = false;
-                agent.updateRotation = true;
-                caught = false;
-                onPlayerSpotted?.Invoke();
-                break;
-
-            case State.Search:
-                baseSpeed = searchSpeed;
-                agent.stoppingDistance = 0f;
-                agent.autoBraking = true;
-                agent.updateRotation = true;
-                searchTimer = searchDuration;
-                agent.SetDestination(lastKnownPosition);
-                break;
-        }
-
-        ApplyStateVisuals();
-    }
-
-    void UpdatePatrol(bool seesTarget)
-    {
-        if (seesTarget)
-        {
-            EnterState(State.Chase);
-            return;
-        }
-
-        if (patrolRoute == null || patrolRoute.Count == 0) return;
-
-        if (HasArrived(waypointTolerance))
-        {
-            waitTimer += Time.deltaTime;
-            if (waitTimer >= waitAtWaypoint)
-            {
-                waitTimer = 0f;
-                waypointIndex = patrolRoute.NextIndex(waypointIndex, ref patrolDirection);
-                GoToCurrentWaypoint();
-            }
-        }
-    }
-
-    void UpdateChase(bool seesTarget)
-    {
-        if (target == null)
-        {
-            EnterState(State.Patrol);
-            return;
-        }
-
-        bool remembers = Time.time - lastSeenTime <= memoryDuration;
-
-        if (!seesTarget && !remembers)
-        {
-            // Oyuncuyu kaybettik: son gördüğümüz yere git ve ara
-            EnterState(State.Search);
-            return;
-        }
-
-        // Görüyorsak (veya yeni kaybettiysek) oyuncunun gerçek pozisyonuna git
         repathTimer -= Time.deltaTime;
         if (repathTimer <= 0f)
         {
@@ -301,7 +253,6 @@ public class EnemyAI : MonoBehaviour
                 agent.SetDestination(target.position);
         }
 
-        // Yakaladı mı?
         Vector3 diff = target.position - transform.position;
         diff.y = 0f;
         if (diff.magnitude <= catchDistance)
@@ -320,28 +271,71 @@ public class EnemyAI : MonoBehaviour
         }
     }
 
-    void UpdateSearch(bool seesTarget)
+    public void ResetChase()
     {
-        if (seesTarget)
-        {
-            EnterState(State.Chase);
-            return;
-        }
+        repathTimer = 0f;
+        caught = false;
+    }
 
-        if (!HasArrived(waypointTolerance)) return;
+    /// <summary>Devriyede bir sonraki waypoint'e geç.</summary>
+    public void AdvanceWaypoint()
+    {
+        if (patrolRoute == null || patrolRoute.Count == 0) return;
+        waypointIndex = patrolRoute.NextIndex(waypointIndex, ref patrolDirection);
+        GoToCurrentWaypoint();
+    }
 
-        // Son görülen noktadayız: etrafa bakın
+    /// <summary>Rotaya en yakın noktadan dön.</summary>
+    public void SelectClosestWaypoint()
+    {
+        if (patrolRoute != null && patrolRoute.Count > 0)
+            waypointIndex = patrolRoute.ClosestIndex(transform.position);
+    }
+
+    /// <summary>Olduğu yerde dönerek etrafa bakın.</summary>
+    public void LookAround()
+    {
         agent.updateRotation = false;
         transform.Rotate(0f, lookAroundSpeed * Time.deltaTime, 0f);
+    }
 
-        searchTimer -= Time.deltaTime;
-        if (searchTimer <= 0f)
-        {
-            // Bulamadık, rotaya en yakın noktadan geri dön
-            if (patrolRoute != null && patrolRoute.Count > 0)
-                waypointIndex = patrolRoute.ClosestIndex(transform.position);
-            EnterState(State.Patrol);
-        }
+    /// <summary>Kapı az önce kapandı ve düşman kapıya yakın mı? (Hafta 7: Kapıda Bekle)</summary>
+    public bool DoorBlocksMe()
+    {
+        if (door == null || door.IsOpen) return false;
+        if (Time.time - door.LastClosedTime > doorReactTime) return false;
+        return door.DistanceTo(transform.position) < doorStopDistance;
+    }
+
+    /// <summary>
+    /// Hafta 7 ödevi: oyuncu ses çıkardı. Devriye ya da Ara'dayken 8 m içindeyse Araştır'a geç.
+    /// Kovala'dayken sesi görmezden gelir.
+    /// </summary>
+    public void HearNoise(Vector3 position)
+    {
+        Vector3 d = position - transform.position;
+        d.y = 0f;
+        if (d.magnitude > hearingRange) return;
+        if (!(FSM.IsIn(Patrol) || FSM.IsIn(Search) || FSM.IsIn(Investigate))) return;
+
+        noisePosition = position;
+        if (FSM.IsIn(Investigate))
+            Investigate.Enter(this);          // yeni ses: hedefi ve süreyi tazele
+        else
+            FSM.ChangeState(Investigate);
+    }
+
+    public void GoToCurrentWaypoint()
+    {
+        if (patrolRoute == null || patrolRoute.Count == 0) return;
+        agent.SetDestination(patrolRoute.GetPoint(waypointIndex));
+        patrolRoute.Highlight(waypointIndex);
+    }
+
+    public bool HasArrived(float tolerance)
+    {
+        if (agent.pathPending) return false;
+        return agent.remainingDistance <= Mathf.Max(tolerance, agent.stoppingDistance);
     }
 
     // ---------------------------------------------------------------- Zıplama
@@ -422,7 +416,9 @@ public class EnemyAI : MonoBehaviour
     /// </summary>
     void ApplyAreaMask()
     {
-        bool allowJump = (!jumpOnlyWhenChasing || CurrentState != State.Patrol) && Time.time >= jumpCooldownUntil;
+        if (FSM == null) return;
+        bool calm = FSM.IsIn(Patrol) || FSM.IsIn(WaitAtDoor);
+        bool allowJump = (!jumpOnlyWhenChasing || !calm) && Time.time >= jumpCooldownUntil;
         int mask = allowJump ? NavMesh.AllAreas : NavMesh.AllAreas & ~jumpAreaMask;
         if (agent.areaMask != mask) agent.areaMask = mask;
     }
@@ -440,20 +436,7 @@ public class EnemyAI : MonoBehaviour
 
     // ---------------------------------------------------------------- Yardımcılar
 
-    void GoToCurrentWaypoint()
-    {
-        if (patrolRoute == null || patrolRoute.Count == 0) return;
-        agent.SetDestination(patrolRoute.GetPoint(waypointIndex));
-        patrolRoute.Highlight(waypointIndex);
-    }
-
-    bool HasArrived(float tolerance)
-    {
-        if (agent.pathPending) return false;
-        return agent.remainingDistance <= Mathf.Max(tolerance, agent.stoppingDistance);
-    }
-
-    void FaceTowards(Vector3 point)
+    public void FaceTowards(Vector3 point)
     {
         Vector3 dir = point - transform.position;
         dir.y = 0f;
@@ -490,17 +473,9 @@ public class EnemyAI : MonoBehaviour
         label.fontStyle = FontStyle.Bold;
     }
 
-    void ApplyStateVisuals()
+    /// <summary>Durumların Enter'ında çağrılır: renk, koni, yazı ve rota görünürlüğü.</summary>
+    public void ApplyStateVisuals(Color c, string text, bool patrolling)
     {
-        Color c;
-        string text;
-        switch (CurrentState)
-        {
-            case State.Chase:  c = chaseColor;  text = "KOVALIYOR!"; break;
-            case State.Search: c = searchColor; text = "ARIYOR ?";   break;
-            default:           c = patrolColor; text = "DEVRİYE";    break;
-        }
-
         pathLine.startColor = c;
         pathLine.endColor = new Color(c.r, c.g, c.b, 0.3f);
 
@@ -524,8 +499,8 @@ public class EnemyAI : MonoBehaviour
 
         if (patrolRoute != null)
         {
-            patrolRoute.SetRouteAlpha(CurrentState == State.Patrol ? 1f : 0.35f);
-            if (CurrentState != State.Patrol) patrolRoute.Highlight(-1);
+            patrolRoute.SetRouteAlpha(patrolling ? 1f : 0.35f);
+            if (!patrolling) patrolRoute.Highlight(-1);
         }
     }
 
@@ -554,11 +529,18 @@ public class EnemyAI : MonoBehaviour
 
     void OnDrawGizmosSelected()
     {
-        if (!Application.isPlaying) return;
-        if (CurrentState == State.Search || CurrentState == State.Chase)
+        if (!Application.isPlaying || FSM == null) return;
+        if (FSM.IsIn(Search) || FSM.IsIn(Chase))
         {
             Gizmos.color = searchColor;
             Gizmos.DrawWireSphere(lastKnownPosition, 0.6f);
         }
+        if (FSM.IsIn(Investigate))
+        {
+            Gizmos.color = investigateColor;
+            Gizmos.DrawWireSphere(noisePosition, 0.6f);
+        }
+        Gizmos.color = new Color(investigateColor.r, investigateColor.g, investigateColor.b, 0.3f);
+        Gizmos.DrawWireSphere(transform.position, hearingRange);
     }
 }

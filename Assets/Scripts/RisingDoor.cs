@@ -37,6 +37,8 @@ public class RisingDoor : MonoBehaviour
     public float promptHeight = 2f;
 
     public bool IsOpen { get; private set; }
+    /// <summary>Kapının en son kapanmaya başladığı an (Hafta 7: Kapıda Bekle durumu okur).</summary>
+    public float LastClosedTime { get; private set; } = -999f;
     public bool IsMoving { get; private set; }
 
     private Vector3 closedPosition;
@@ -108,6 +110,7 @@ public class RisingDoor : MonoBehaviour
     {
         IsMoving = true;
         IsOpen = false;
+        LastClosedTime = Time.time;
 
         // 1) Kapıyı bir anlığına tam kapalı pozisyona koy ve bake'i başlat (kaynaklar şu an toplanır)
         transform.position = closedPosition;
@@ -163,6 +166,13 @@ public class RisingDoor : MonoBehaviour
         Vector3 p = player.position;
         p.y = footprint.center.y;
         return Vector3.Distance(footprint.ClosestPoint(p), p) <= interactDistance;
+    }
+
+    /// <summary>Verilen noktanın kapının zemin izine yatay uzaklığı.</summary>
+    public float DistanceTo(Vector3 position)
+    {
+        position.y = footprint.center.y;
+        return Vector3.Distance(footprint.ClosestPoint(position), position);
     }
 
     bool PlayerOnDoor()

@@ -30,6 +30,8 @@ public class MudZone : MonoBehaviour
     [Header("Görsel")]
     public Color mudColor = new Color(0.36f, 0.24f, 0.12f);
     public bool showLabel = true;
+    [Tooltip("Etiketteki ad (boşsa 'ÇAMUR'). Örn. ikinci alan için 'SIĞ SU'.")]
+    public string labelText = "";
 
     private Bounds bounds;
 
@@ -112,13 +114,23 @@ public class MudZone : MonoBehaviour
         return m;
     }
 
+    /// <summary>Hafta 4 ızgara A*'ı için: bu noktadaki hücre maliyeti (alan yoksa 1).</summary>
+    public static float CostAt(Vector3 position)
+    {
+        float c = 1f;
+        foreach (MudZone z in zones)
+            if (z.Contains(position)) c = Mathf.Max(c, z.areaCost);
+        return c;
+    }
+
     void CreateLabel()
     {
         GameObject go = new GameObject(name + "_Etiket");
         TextMesh t = go.AddComponent<TextMesh>();
         t.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         go.GetComponent<MeshRenderer>().sharedMaterial = t.font.material;
-        t.text = $"ÇAMUR\nmaliyet x{areaCost:0}";
+        string title = string.IsNullOrEmpty(labelText) ? "ÇAMUR" : labelText;
+        t.text = $"{title}\nmaliyet x{areaCost:0}";
         t.anchor = TextAnchor.MiddleCenter;
         t.alignment = TextAlignment.Center;
         t.fontSize = 64;
